@@ -1,0 +1,215 @@
+---
+title: "Barbell Lifts"
+output: html_document
+---
+
+To build a model to predict the correct execution of unilateral dumbbell 
+biceps curls, exercises were performed in five different ways (one correct 
+execution and four incorrect ones) by six male 
+participants aged between 20-28 years with little weight lifting experience. 
+The collectors of the data made sure that all participants could 
+easily simulate the mistakes in a safe and controlled manner by using a 
+relatively light dumbbell (1.25kg). The five different fashions were: 
+exactly according to the specification (Class A), 
+throwing the elbows to the front (Class B), 
+lifting the dumbbell only halfway (Class C), 
+lowering the dumbbell only halfway (Class D) and 
+throwing the hips to the front (Class E). Read more at 
+http://groupware.les.inf.puc-rio.br/har. The exercises were monitored with the 
+sensors shown in the figure.
+
+<img src="on-body-sensing-schema.png" width="200" />
+
+The data was downloaded from
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+on 17 Aug 2014. Information about the data is given at
+http://groupware.les.inf.puc-rio.br/har in the weight lifting exercise section.
+
+The data stems from the following publication:
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. 
+Qualitative Activity Recognition of Weight Lifting Exercises. 
+Proceedings of 4th International Conference in Cooperation with SIGCHI 
+(Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+## Explore and clean
+
+Load the training dataset
+```{r}
+training <- read.csv("pml-training.csv",na.strings=c("","#DIV/0!","NA"),
+                     stringsAsFactors=FALSE)
+```
+
+Load the testing data set
+```{r}
+testing <- read.csv("pml-testing.csv",na.strings=c("","#DIV/0!","NA"),
+                    stringsAsFactors=FALSE)
+```
+By examining the data frames we notice that the variable classe in the training set 
+has been replaced by problem_id in the testing set.
+
+We drop variables that have NAs in them and turn the character variables to factors.
+```{r}
+for (variable in names(training)){
+    if (class(training[,variable])=="character"){
+        training[variable] <- as.factor(training[,variable])
+    }
+}
+for (variable in names(testing)){
+    if (class(testing[,variable])=="character"){
+        testing[variable] <- as.factor(testing[,variable])
+    }
+}
+# drop columns with NAs
+dropRows = c()
+for (i in 1:159){
+    if( sum(is.na(training[,i])) > 0 ){
+        dropRows = c(dropRows,i)
+    }
+}
+training <- training[-dropRows]
+testing <- testing[-dropRows]
+```
+We only want to retain the information from the sensors. Thus we drop columns 
+like X, which are just the row indices. We further drop the time and user 
+information, as we want a general model and not a user specific one.
+```{r}
+training <- training[-(1:7)]
+testing <- testing[-(1:7)]
+```
+
+We quickly summarize the resulting training data frame to see what we feed into 
+our model.
+```{r}
+dim(training)
+str(training)
+```
+
+To be able to evaluate our model on a data set that has not been used 
+for training, we split the training set
+```{r}
+library(caret)
+inTrain = createDataPartition(training$classe,p=0.7,list=FALSE)
+train_training <- training[inTrain,]
+test_training <- training[-inTrain,]
+```
+
+# GBM
+
+We start by building a generalized boosted model (gbm) using 3-fold cross validation:
+```{r, eval=FALSE}
+library(doMC)
+registerDoMC(3)
+set.seed(3005)
+ctrl <- trainControl(method="cv",number=3)
+modgbm <- train(classe~.,data=train_training,method="gbm",
+                trControl=ctrl,verbose=FALSE)
+save(modgbm,file="modgbm.RData")
+```
+The resulting model is
+```{r}
+load(file = "modgbm.RData")
+modgbm
+```
+
+To estimate the out-of-sample error, we can use the average of the error 
+measure on the individual cross-validations.
+```{r}
+modgbm$resample
+accError <- round(1 - mean(modgbm$resample$Accuracy),2)
+kappaError <- round(1 - mean(modgbm$resample$Kappa),2)
+```
+We estimate an out-of-sample error in accuracy of `r accError` and in kappa of 
+`r kappaError`. We can look at the most influential predictors in our model and 
+plot a few of them.
+```{r predictors}
+varImp(modgbm,scale=FALSE)
+pairs(training[c("roll_belt","pitch_forearm","yaw_belt","magnet_dumbbell_z",
+                 "magnet_dumbbell_y")],col=training$classe)
+```
+
+The in-sample-error can be gathered from the confusion matrix for the data set 
+used to train the model.
+```{r}
+predgbm <- predict(modgbm,train_training)
+confusionMatrix(predgbm,train_training$classe)
+```
+
+Applying our model on the data set that we split off before we built the model 
+confirms our expectation of the out-of-sample error.
+```{r}
+predgbm <- predict(modgbm,test_training)
+confusionMatrix(predgbm,test_training$classe)
+```
+
+Last we predict the 20 cases in the testing data.
+```{r}
+predgbm <- predict(modgbm,testing)
+predgbm
+#predict(modgbm,testing,type="prob") # shows the probabilities
+```
+
+# RF
+
+With an error rate of about 5%, we would expect one error in twenty. We would 
+prefer a model with a higher accuracy. Thus we fit a random forest (rf) model as 
+well.
+```{r, eval=FALSE}
+set.seed(3008)
+ctrl <- trainControl(method="cv",number=3)
+modrf <- train(classe~.,data=train_training,method="rf",trControl=ctrl)
+save(modrf,file="modrf.RData")
+```
+
+```{r}
+load(file = "modrf.RData")
+modrf
+```
+
+```{r}
+modrf$resample
+mean(modrf$resample$Accuracy)
+mean(modrf$resample$Kappa)
+```
+This leads to an estimated out-of-sample error rate of roughly 1%, 
+which should be sufficient. Check the in-sample-error
+```{r}
+predrf <- predict(modrf,train_training)
+confusionMatrix(predrf,train_training$classe)
+```
+and the out-of-sample error with data not used for training.
+```{r}
+predrf <- predict(modrf,test_training)
+confusionMatrix(predrf,test_training$classe)
+```
+The prediction is
+```{r}
+predrf <- predict(modrf,testing)
+predrf
+```
+
+# Compare predictions of gbm and rf
+Check how many of the predictions are the same for the two models.
+```{r}
+sum(predrf==predgbm)
+```
+The two models agree in all predictions. Thus I will stop here and use these 
+predictions.
+
+# Prepare the predictions for submission
+
+```{r}
+results <- data.frame(problem_id=testing$problem_id,classe=as.character(predrf))
+results
+```
+Write answers to files, as given in the instructions.
+```{r, eval=FALSE}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(as.character(predrf))
+```
